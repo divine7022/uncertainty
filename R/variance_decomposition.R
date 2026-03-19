@@ -23,6 +23,13 @@ calculate_ensemble_variance <- function(output_dir, run_ids, settings) {
   })
 
   if (nrow(workflow_site_map) == 0) {
+    workflow_site_map <- tibble::tibble(
+      site_id = character(),
+      runid = character()
+    )
+  }
+
+  if (nrow(workflow_site_map) == 0) {
     PEcAn.logger::logger.warn(
       "Could not parse Site IDs from settings$ensemble. 'site_id' will be NA."
     )
@@ -236,12 +243,15 @@ partition_variance_sources <- function(sobol_indices,
 #'   site_id, response_var, pft, parameter, partial_variance.
 #' @param variance_partition_site Data frame from partition_variance_sources().
 #' @param ensemble_variance Data frame mapping runid to site_id.
+#' @param parameter_category Category name to treat as the parameter bucket.
+#'   Defaults to `"parameter"` for the legacy custom Sobol workflow.
 #'
 #' @return Tibble with columns: site_id, runid, response_var, parameter,
 #'   pft, local_param_frac, Var_parameter_param, Var_total, frac_of_total.
 partition_parameter_variance_local <- function(local_sa,
                                                variance_partition_site,
-                                               ensemble_variance) {
+                                               ensemble_variance,
+                                               parameter_category = "parameter") {
 
   required_local_cols <- c("site_id", "response_var",
                            "pft", "parameter", "partial_variance")
@@ -274,7 +284,7 @@ partition_parameter_variance_local <- function(local_sa,
 
   # extract Var_parameter per runid * variable
   var_param_run <- variance_partition_site |>
-    dplyr::filter(.data$category == "parameter") |>
+    dplyr::filter(.data$category == .env$parameter_category) |>
     dplyr::select(
       "runid", "variable",
       Var_parameter = "Var_category",
