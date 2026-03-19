@@ -1,0 +1,259 @@
+---
+title: "Variance Decomposition (PEcAn Sobol)"
+date: today
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(config)
+library(dplyr)
+library(ggplot2)
+library(here)
+library(knitr)
+library(readr)
+library(scales)
+
+here::i_am("analysis/variance_decomposition_pecan_sobol.qmd")
+cfg <- config::get(file = here::here("000-config.yml"))
+data_dir <- here::here(cfg$paths$data_dir, "pecan_sobol")
+
+site_partition <- readr::read_csv(
+  file.path(data_dir, "variance_partition_site_level.csv"),
+  show_col_types = FALSE
+)
+
+param_partition <- readr::read_csv(
+  file.path(data_dir, "variance_partition_parameters.csv"),
+  show_col_types = FALSE
+)
+
+type_summary <- readr::read_csv(
+  file.path(data_dir, "variance_partition_summary.csv"),
+  show_col_types = FALSE
+)
+
+param_summary <- readr::read_csv(
+  file.path(data_dir, "variance_partition_params_summary.csv"),
+  show_col_types = FALSE
+)
+
+pretty_source <- function(x) {
+  dplyr::case_when(
+    x == "param" ~ "Parameters",
+    x == "met" ~ "Meteorology",
+    x == "poolinitcond" ~ "Initial Conditions",
+    x == "events" ~ "Events / Management",
+    x == "interaction" ~ "Interactions",
+    TRUE ~ x
+  )
+}
+
+ordered_source_levels <- function(observed, preferred) {
+  observed <- unique(observed[!is.na(observed) & nzchar(observed)])
+  c(
+    preferred[preferred %in% observed],
+    sort(setdiff(observed, preferred))
+  )
+}
+
+site_partition <- site_partition |>
+  dplyr::mutate(
+    source = pretty_source(.data$category),
+    site_label = dplyr::if_else(
+      !is.na(.data$site_id) & nzchar(.data$site_id),
+      .data$site_id,
+      .data$runid
+    )
+  )
+
+type_summary <- type_summary |>
+  dplyr::mutate(source = pretty_source(.data$category))
+
+site_source_levels <- ordered_source_levels(
+  site_partition$source,
+  c(
+    "Interactions",
+    "Events / Management",
+    "Initial Conditions",
+    "Meteorology",
+    "Parameters"
+  )
+)
+
+summary_source_levels <- ordered_source_levels(
+  type_summary$source,
+  c(
+    "Parameters",
+    "Meteorology",
+    "Initial Conditions",
+    "Events / Management"
+  )
+)
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+)
+```
+
+```{r}
+#| label: findings
+#| include: false
+
+dominant_types <- type_summary |>
+  dplyr::group_by(.data$variable) |>
+  dplyr::slice_max(order_by = .data$mean_frac, n = 1, with_ties = FALSE) |>
+  dplyr::ungroup()
+
+interaction_mean <- site_partition |>
+  dplyr::filter(.data$category == "interaction") |>
+  dplyr::summarize(mean_frac = mean(.data$frac_of_total, na.rm = TRUE)) |>
+  dplyr::pull(.data$mean_frac)
+
+top_params <- param_summary |>
+  dplyr::group_by(.data$response_var) |>
+  dplyr::slice_max(order_by = .data$mean_frac, n = 5, with_ties = FALSE) |>
+  dplyr::ungroup()
+```
+
+# Overview
+
+This report consumes PEcAn-generated `sobol.indices.*.Rdata` outputs and keeps the existing local sensitivity analysis only as a within-`param` drilldown. Type-level variance decomposition is therefore taken directly from the PEcAn Sobol workflow, not recomputed here.
+
+`uncertainty` reads factor/type metadata from the PEcAn-saved Sobol objects and uses the canonical PEcAn filenames only for file-level keys such as run id, variable, and year bounds.
+
+- Mean interaction share across all site-variable combinations: `r percent(interaction_mean, accuracy = 0.1)`.
+- Dominant type by variable:
+
+```{r}
+knitr::kable(
+  dominant_types |>
+    dplyr::transmute(
+      variable,
+      dominant_source = .data$source,
+      mean_fraction = scales::percent(.data$mean_frac, accuracy = 0.1)
+    ),
+  align = c("l", "l", "r")
+)
+```
+
+# Type-Level Sobol Results
+
+The figure below shows the PEcAn type-level decomposition by site. Categories are the canonical PEcAn factor ids rendered into readable labels only for the report.
+
+```{r}
+ggplot(
+  site_partition |>
+    dplyr::mutate(
+      source = factor(.data$source, levels = site_source_levels)
+    ),
+  aes(x = .data$site_label, y = .data$frac_of_total, fill = .data$source)
+) +
+  geom_col(position = "fill", width = 0.85) +
+  facet_wrap(~variable, ncol = 1, scales = "free_x") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set2", name = "Source") +
+  labs(
+    x = "Site / Run",
+    y = "Fraction of total variance"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+ggplot(
+  type_summary |>
+    dplyr::mutate(
+      source = factor(.data$source, levels = summary_source_levels)
+    ),
+  aes(x = .data$source, y = .data$mean_frac, fill = .data$source)
+) +
+  geom_col() +
+  geom_errorbar(
+    aes(
+      ymin = pmax(.data$mean_frac - .data$sd_frac, 0),
+      ymax = .data$mean_frac + .data$sd_frac
+    ),
+    width = 0.2
+  ) +
+  facet_wrap(~variable, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  labs(
+    x = NULL,
+    y = "Mean fraction of total variance"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# Parameter Drilldown Within `param`
+
+These results keep the existing local OAT attribution logic, but only after the PEcAn Sobol workflow has determined the size of the overall `param` contribution.
+
+```{r}
+if (nrow(param_summary) == 0) {
+  cat("No parameter-level decomposition was produced.\n")
+} else {
+  ggplot(
+    top_params,
+    aes(
+      x = reorder(.data$parameter, .data$mean_frac),
+      y = .data$mean_frac,
+      fill = .data$response_var
+    )
+  ) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    facet_wrap(~response_var, scales = "free_y") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(
+      x = "Parameter",
+      y = "Mean fraction of total variance"
+    )
+}
+```
+
+```{r}
+if (nrow(top_params) > 0) {
+  knitr::kable(
+    top_params |>
+      dplyr::transmute(
+        response_var,
+        parameter,
+        mean_fraction = scales::percent(.data$mean_frac, accuracy = 0.1)
+      ),
+    align = c("l", "l", "r")
+  )
+}
+```
+
+# Data Products
+
+This report uses the dedicated PEcAn-backed outputs written under `data/pecan_sobol/`:
+
+- `type_level_indices.csv`
+- `ensemble_variance.csv`
+- `variance_partition_site_level.csv`
+- `variance_partition_parameters.csv`
+- `variance_partition_summary.csv`
+- `variance_partition_params_summary.csv`
